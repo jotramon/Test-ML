@@ -143,6 +143,18 @@ class GCPModelMixin:
         # Project/dataset are resolved by the reader from Settings; kept for API compatibility.
         return self._reader.read()
 
+    def write_predictions(self, predictions: list[int], identifiers: pd.DataFrame) -> None:
+        """Persist predictions through the injected DataReader.
+
+        Parameters
+        ----------
+        predictions : list[int]
+            0/1 delay predictions, row-aligned with ``identifiers``.
+        identifiers : pd.DataFrame
+            ``OPERA``, ``TIPOVUELO`` and ``MES`` of each scored flight.
+        """
+        self._reader.write(predictions, identifiers)
+
     def save(self, bucket: str = "", run_id: str = "") -> str:
         """Persist the fitted model via the injected ArtifactStore.
 

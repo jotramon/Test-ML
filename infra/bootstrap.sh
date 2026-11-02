@@ -22,7 +22,9 @@ BQ_RAW_TABLE="${BQ_RAW_TABLE:-raw_flights}"
 BQ_SERVING_TABLE="${BQ_SERVING_TABLE:-serving_input}"
 GCP_BUCKET_BUILD="${GCP_BUCKET_BUILD:-${GCP_PROJECT_ID}-mle-build}"
 AR_REPOSITORY="${AR_REPOSITORY:-mle-challenge}"
+BQ_PREDICTIONS_TABLE="${BQ_PREDICTIONS_TABLE:-predictions}"
 TRAINING_JOB="${TRAINING_JOB:-mle-training}"
+SERVING_JOB="${SERVING_JOB:-mle-serving}"
 DRY_RUN="${DRY_RUN:-0}"
 
 SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT_NAME}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
@@ -191,26 +193,36 @@ build_image() {
 }
 
 TRAINING_IMAGE="${REGISTRY}/training:${IMAGE_TAG}"
+SERVING_IMAGE="${REGISTRY}/serving:${IMAGE_TAG}"
 build_image Dockerfile.training "${TRAINING_IMAGE}"
+build_image Dockerfile.serving "${SERVING_IMAGE}"
 
 # --- 6. pipelines as Cloud Run Jobs ------------------------------------------
 
 RUNTIME_ENV="DEPLOYMENT_MODE=gcp,GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION}"
 RUNTIME_ENV+=",GCP_BUCKET_INPUT=${GCP_BUCKET_INPUT},GCP_BUCKET_ARTIFACTS=${GCP_BUCKET_ARTIFACTS}"
 RUNTIME_ENV+=",BQ_DATASET=${BQ_DATASET},BQ_RAW_TABLE=${BQ_RAW_TABLE}"
+RUNTIME_ENV+=",BQ_PREDICTIONS_TABLE=${BQ_PREDICTIONS_TABLE}"
 
-# `deploy` creates the job or updates it in place.
-log "Cloud Run Job ${TRAINING_JOB}"
-run gcloud run jobs deploy "${TRAINING_JOB}" \
-  --image="${TRAINING_IMAGE}" \
-  --region="${GCP_REGION}" \
-  --service-account="${SERVICE_ACCOUNT_EMAIL}" \
-  --set-env-vars="${RUNTIME_ENV}" \
-  --tasks=1 \
-  --max-retries=0 \
-  --task-timeout=15m \
-  --cpu=1 \
-  --memory=2Gi
+# `deploy` creates the job or updates it in place. No retries: both pipelines
+# are deterministic, so a retry would fail the same way and only add cost.
+deploy_job() {
+  local job="$1" image="$2"
+  log "Cloud Run Job ${job}"
+  run gcloud run jobs deploy "${job}" \
+    --image="${image}" \
+    --region="${GCP_REGION}" \
+    --service-account="${SERVICE_ACCOUNT_EMAIL}" \
+    --set-env-vars="${RUNTIME_ENV}" \
+    --tasks=1 \
+    --max-retries=0 \
+    --task-timeout=15m \
+    --cpu=1 \
+    --memory=2Gi
+}
+
+deploy_job "${TRAINING_JOB}" "${TRAINING_IMAGE}"
+deploy_job "${SERVING_JOB}" "${SERVING_IMAGE}"
 
 # --- summary -----------------------------------------------------------------
 
@@ -223,6 +235,9 @@ GCP_BUCKET_INPUT=${GCP_BUCKET_INPUT}
 GCP_BUCKET_ARTIFACTS=${GCP_BUCKET_ARTIFACTS}
 BQ_DATASET=${BQ_DATASET}
 BQ_RAW_TABLE=${BQ_RAW_TABLE}
+BQ_PREDICTIONS_TABLE=${BQ_PREDICTIONS_TABLE}
 SETTINGS
-printf '\nRun training with:\n  gcloud run jobs execute %s --region=%s --wait\n' \
-  "${TRAINING_JOB}" "${GCP_REGION}"
+printf '\nRun the pipelines with:\n'
+for job in "${TRAINING_JOB}" "${SERVING_JOB}"; do
+  printf '  gcloud run jobs execute %s --region=%s --wait\n' "${job}" "${GCP_REGION}"
+done
