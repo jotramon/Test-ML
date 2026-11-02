@@ -17,6 +17,22 @@ _PREDICTIONS_SCHEMA = [
     bigquery.SchemaField("prediction", "INTEGER"),
 ]
 
+# The raw table stores the CSV columns under BigQuery-safe names
+# (see infra/bootstrap.sh); reads restore the names the model expects.
+_SOURCE_COLUMN_NAMES = {
+    "Fecha_I": "Fecha-I",
+    "Vlo_I": "Vlo-I",
+    "Ori_I": "Ori-I",
+    "Des_I": "Des-I",
+    "Emp_I": "Emp-I",
+    "Fecha_O": "Fecha-O",
+    "Vlo_O": "Vlo-O",
+    "Ori_O": "Ori-O",
+    "Des_O": "Des-O",
+    "Emp_O": "Emp-O",
+    "ANIO": "AÑO",
+}
+
 
 class BigQueryClient:
     """Read raw flight data from BigQuery and write predictions to a BQ table.
@@ -49,7 +65,7 @@ class BigQueryClient:
             dataset=settings.bq_dataset,
             raw_table=settings.bq_raw_table,
         )
-        return self._client.query(query).to_dataframe()
+        return self._client.query(query).to_dataframe().rename(columns=_SOURCE_COLUMN_NAMES)
 
     def write(self, predictions: list[int], identifiers: pd.DataFrame) -> None:
         """Insert predictions into the configured BigQuery predictions table.
