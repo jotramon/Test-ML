@@ -90,7 +90,9 @@ Reproduce with `uv run python docs/model_comparison.py`.
 
 - `tests/pipelines/test_training.py` uses `FEATURES_COLS` without importing it (`test_serving.py`
   does import it), so its tests fail with `NameError` regardless of the implementation.
-  Addressed in Part III.
+  Fixed in Part III by adding the missing import, following the brief's "If you find any bug,
+  fix it". No assertion was changed. The "cannot change the unit test implementation" rule
+  applies to `make model-test`, whose tests are untouched.
 - In the `Makefile`, `.PHONY: pipeline-test` doesn't match the actual target, `pipelines-test`.
 - There is no `.coveragerc`, although the test targets reference it; `coverage` falls back to
   its defaults.
@@ -159,3 +161,67 @@ Run against project `ml-test-513500`:
 - **Data checks before loading:** both CSVs are valid UTF-8; every date matches the `DATETIME`
   format and every day, month and year is an integer. The only null is one flight number
   (`Vlo-O`), loaded as `NULL`.
+
+---
+
+## Part III — Training pipeline
+
+[`challenge/training.py`](../challenge/training.py) runs as the Cloud Run Job `mle-training`.
+
+```bash
+make training-local                                          # data/data.csv -> artifacts/
+gcloud run jobs execute mle-training --region=us-central1 --wait   # BigQuery -> GCS
+```
+
+### Steps
+
+| Step | What it does |
+|---|---|
+| `step_load_data` | Reads raw flights through the model's injected reader (`LocalCSVClient` or `BigQueryClient`) |
+| `step_preprocess` | `DelayModel.preprocess` → top-10 features and `delay` target |
+| `step_train` | Fits on a 67/33 split and evaluates on the holdout, then **refits on all rows** for the shipped model |
+| `step_save` | Persists `model.joblib` and `metadata.json` under the run's version, then moves `latest.txt` |
+
+`main()` only picks the I/O implementations from `DEPLOYMENT_MODE` (`local`: CSV + local
+folder; `gcp`: BigQuery + GCS). The steps are identical in both modes.
+
+### Design decisions
+
+- **Every run is a new version**, `<UTC timestamp>-<random suffix>` (e.g.
+  `20261102T022944Z-e93240`): sortable, unique and never overwritten. `latest.txt` is the
+  promotion pointer, so rolling back means rewriting one line.
+- **`metadata.json` next to each model** stores the version, timestamp, row counts and holdout
+  metrics. The API triggers the job and cannot receive return values from it, so this file is how
+  `/pipeline/train` (Part V) reports what was trained.
+- **Holdout metrics, then refit on all data.** The metrics describe a model trained on 67% of the
+  rows; the shipped model uses 100%, so it is at least as good as reported.
+- **Image** (`Dockerfile.training`): `python:3.12-slim` plus `libgomp1` (XGBoost's OpenMP runtime);
+  dependencies installed with `uv sync --frozen` from `uv.lock`, in their own layer so code-only
+  changes rebuild in seconds; runs as a non-root user. `.dockerignore` keeps data, tests and caches
+  out of the image.
+- **Built by Cloud Build as the single service account** (`infra/cloudbuild.yaml`): native
+  `linux/amd64` images without local Docker, and no use of the default Compute/Cloud Build
+  accounts. Images are tagged with the commit; uncommitted builds get a `-dirty-<timestamp>`
+  suffix so a tag never claims code it doesn't contain.
+- **Job settings:** `--max-retries=0` (training is deterministic, so a retry would fail the same
+  way and only add cost), `--task-timeout=15m`, 1 CPU / 2 GiB.
+- **Provisioning from scratch:** right after `bootstrap.sh` enables the Cloud Build API, the
+  first build can be rejected while the API propagates, so builds are retried up to 4 times.
+
+### Verification
+
+- **Unit tests:** `tests/pipelines/test_training.py` passes 3/3 once its missing
+  `FEATURES_COLS` import is added (see "Notes on the provided repository" in Part I).
+- **Local:** `make training-local` writes `artifacts/<version>/{model.joblib,metadata.json}` and
+  `latest.txt`; holdout F1 (delayed class) 0.366, matching the model comparison.
+- **`gcp` mode from a laptop:** same pipeline against the real BigQuery table and GCS bucket,
+  before containerizing, to separate code issues from container issues.
+- **Cloud Run:** execution `mle-training-nh967` succeeded and published version
+  `20261102T022944Z-e93240` with the same metrics.
+- **`bootstrap.sh` end to end** (exit code 0), including the registry, the build and the job.
+
+### Known limitation
+
+BigQuery doesn't guarantee row order, so the holdout split may differ between runs on the same
+data. Metrics can vary slightly from run to run; the shipped model is unaffected because it is
+refit on all rows.
