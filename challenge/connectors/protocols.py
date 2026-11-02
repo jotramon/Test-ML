@@ -22,6 +22,7 @@ class DataReader(Protocol):
         """Persist predictions, paired with their OPERA/TIPOVUELO/MES identifiers."""
         ...
 
+
 @runtime_checkable
 class ArtifactStore(Protocol):
     """Interface for persisting and retrieving trained model artifacts."""
@@ -35,7 +36,9 @@ class ArtifactStore(Protocol):
         ...
 
 
-def build_predictions_frame(predictions: list[int], identifiers: pd.DataFrame) -> pd.DataFrame:
+def build_predictions_frame(
+    predictions: list[int], identifiers: pd.DataFrame
+) -> pd.DataFrame:
     """Pair predictions with their identifiers in the shared output layout.
 
     Shared by every ``DataReader.write`` implementation so all sinks persist

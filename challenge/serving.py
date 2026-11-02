@@ -42,7 +42,9 @@ def step_preprocess(model: DelayModel, data: pd.DataFrame) -> pd.DataFrame:
 def step_predict(model: DelayModel, features: pd.DataFrame) -> list[int]:
     """Return a 0/1 delay prediction per flight."""
     predictions = model.predict(features)
-    logger.info("Predicted %d delays out of %d flights", sum(predictions), len(predictions))
+    logger.info(
+        "Predicted %d delays out of %d flights", sum(predictions), len(predictions)
+    )
     return predictions
 
 

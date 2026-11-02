@@ -48,6 +48,10 @@ class Settings:
                 f"Missing required environment variables for gcp mode: {', '.join(missing)}"
             )
 
+    def bq_table_id(self, table: str) -> str:
+        """Return the fully qualified ``project.dataset.table`` id of a dataset table."""
+        return f"{self.gcp_project_id}.{self.bq_dataset}.{table}"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

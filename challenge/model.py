@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, overload
 
 import pandas as pd
 import xgboost as xgb
@@ -28,7 +28,7 @@ FEATURES_COLS = [
     "OPERA_Sky Airline",
     "OPERA_Copa Air",
 ]
-# Raw columns the one-hot encoding is built from; also all serving_input.csv carries.
+# Raw columns the one-hot encoding is built from (the only columns serving_input.csv has).
 RAW_FEATURE_COLS = ["OPERA", "TIPOVUELO", "MES"]
 TARGET_COL = "delay"
 DELAY_THRESHOLD_MINUTES = 15
@@ -43,7 +43,17 @@ class BaseDelayModel(ABC):
     """
 
     def __init__(self) -> None:
-        self._model = None  # fitted XGBClassifier, populated by fit()
+        self._model: xgb.XGBClassifier | None = None  # populated by fit() or load()
+
+    @overload
+    def preprocess(
+        self, data: pd.DataFrame, target_column: None = None
+    ) -> pd.DataFrame: ...
+
+    @overload
+    def preprocess(
+        self, data: pd.DataFrame, target_column: str
+    ) -> tuple[pd.DataFrame, pd.DataFrame]: ...
 
     @abstractmethod
     def preprocess(
@@ -101,7 +111,7 @@ class GCPModelMixin:
 
     Accepts ``reader`` and ``store`` keyword arguments so local and GCP
     implementations can be swapped without changing the step-function signatures.
-    Defaults to ``LocalCSVReader`` and ``LocalArtifactStore`` for zero-credential
+    Defaults to ``LocalCSVClient`` and ``LocalArtifactStore`` for zero-credential
     local operation.
     """
 
@@ -115,13 +125,15 @@ class GCPModelMixin:
         Parameters
         ----------
         reader : DataReader, optional
-            Data-loading client; defaults to ``LocalCSVReader()``.
+            Data-loading client; defaults to ``LocalCSVClient()``.
         store : ArtifactStore, optional
             Artifact-persistence client; defaults to ``LocalArtifactStore()``.
         """
         super().__init__()
         self._reader: DataReader = reader if reader is not None else LocalCSVClient()
-        self._store: ArtifactStore = store if store is not None else LocalArtifactStore()
+        self._store: ArtifactStore = (
+            store if store is not None else LocalArtifactStore()
+        )
         # Run metadata (version, metrics, ...) persisted next to the artifact by the store.
         self.metadata: dict[str, Any] = {}
 
@@ -143,7 +155,9 @@ class GCPModelMixin:
         # Project/dataset are resolved by the reader from Settings; kept for API compatibility.
         return self._reader.read()
 
-    def write_predictions(self, predictions: list[int], identifiers: pd.DataFrame) -> None:
+    def write_predictions(
+        self, predictions: list[int], identifiers: pd.DataFrame
+    ) -> None:
         """Persist predictions through the injected DataReader.
 
         Parameters
@@ -197,6 +211,16 @@ class DelayModel(GCPModelMixin, BaseDelayModel):
     connect preprocess/fit/predict to BigQuery and Cloud Storage.
     """
 
+    @overload
+    def preprocess(
+        self, data: pd.DataFrame, target_column: None = None
+    ) -> pd.DataFrame: ...
+
+    @overload
+    def preprocess(
+        self, data: pd.DataFrame, target_column: str
+    ) -> tuple[pd.DataFrame, pd.DataFrame]: ...
+
     def preprocess(
         self,
         data: pd.DataFrame,
@@ -216,20 +240,23 @@ class DelayModel(GCPModelMixin, BaseDelayModel):
         0.366 vs 0.364); XGBoost wins on class-1 recall stability across
         5-fold CV (0.689 ± 0.006 vs 0.647 ± 0.038). See docs/challenge.md.
         """
-        labels = target.squeeze(axis="columns") if isinstance(target, pd.DataFrame) else target
+        labels = target.iloc[:, 0] if isinstance(target, pd.DataFrame) else target
         n_negative = int((labels == 0).sum())
         n_positive = int((labels == 1).sum())
         if n_negative == 0 or n_positive == 0:
-            raise ValueError("Training data must contain both delayed and on-time flights")
+            raise ValueError(
+                "Training data must contain both delayed and on-time flights"
+            )
 
         # Delays are ~18% of flights; without re-weighting the model predicts
         # almost only "no delay" (class-1 recall ~0.01 in the notebook).
-        self._model = xgb.XGBClassifier(
+        model = xgb.XGBClassifier(
             random_state=1,
             learning_rate=0.01,
             scale_pos_weight=n_negative / n_positive,
         )
-        self._model.fit(features[FEATURES_COLS], labels)
+        model.fit(features[FEATURES_COLS], labels)
+        self._model = model
 
     def predict(self, features: pd.DataFrame) -> list[int]:
         """Return binary delay predictions."""
@@ -237,7 +264,9 @@ class DelayModel(GCPModelMixin, BaseDelayModel):
             # Interface contract: predict() must answer even before fit()/load().
             # Pipelines load an artifact explicitly and fail loudly if none exists,
             # so this fallback is only reached when used directly.
-            logger.warning("predict() called on an untrained model; returning 0 for every row")
+            logger.warning(
+                "predict() called on an untrained model; returning 0 for every row"
+            )
             return [0] * len(features)
         return [int(p) for p in self._model.predict(features[FEATURES_COLS])]
 

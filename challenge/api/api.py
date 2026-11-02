@@ -82,7 +82,9 @@ def get_health() -> dict:
 def post_pipeline_train() -> dict:
     """Trigger the training Cloud Run Job and return model metadata."""
     if _check_raw_flights() == 0:
-        raise HTTPException(status_code=422, detail="raw_flights is empty; load data first")
+        raise HTTPException(
+            status_code=422, detail="raw_flights is empty; load data first"
+        )
     try:
         execution = _submit_and_wait(get_settings().training_job)
     except Exception as exc:
@@ -108,7 +110,9 @@ def post_pipeline_train() -> dict:
 def post_pipeline_predict() -> dict:
     """Trigger the serving Cloud Run Job and return first 10 predictions."""
     if not _check_model_exists():
-        raise HTTPException(status_code=422, detail="no trained model; call /pipeline/train first")
+        raise HTTPException(
+            status_code=422, detail="no trained model; call /pipeline/train first"
+        )
     try:
         execution = _submit_and_wait(get_settings().serving_job)
     except Exception as exc:

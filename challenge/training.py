@@ -37,14 +37,18 @@ def step_load_data(model: DelayModel, project: str, dataset: str) -> pd.DataFram
     return data
 
 
-def step_preprocess(model: DelayModel, data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def step_preprocess(
+    model: DelayModel, data: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Build the feature matrix and the delay target."""
     features, target = model.preprocess(data, target_column=TARGET_COL)
     logger.info("Preprocessed %d rows into %d features", *features.shape)
     return features, target
 
 
-def step_train(model: DelayModel, features: pd.DataFrame, target: pd.DataFrame) -> dict:
+def step_train(
+    model: DelayModel, features: pd.DataFrame, target: pd.DataFrame
+) -> dict[str, float]:
     """Evaluate on a holdout split, then refit on all rows for the shipped model.
 
     The returned metrics describe the holdout evaluation and are stored in

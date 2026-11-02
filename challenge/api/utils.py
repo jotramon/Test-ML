@@ -69,10 +69,12 @@ def count_raw_flights(settings: Settings) -> int:
     if settings.deployment_mode == "gcp":
         from google.api_core.exceptions import NotFound  # noqa: PLC0415
 
-        table_id = f"{settings.gcp_project_id}.{settings.bq_dataset}.{settings.bq_raw_table}"
+        table_id = settings.bq_table_id(settings.bq_raw_table)
         try:
             # Table metadata, not a query: free and instant.
-            return _bigquery_client(settings.gcp_project_id).get_table(table_id).num_rows
+            return (
+                _bigquery_client(settings.gcp_project_id).get_table(table_id).num_rows
+            )
         except NotFound:
             return 0
     path = Path(settings.data_dir) / "data.csv"
@@ -154,7 +156,9 @@ def _run_cloud_run_job(settings: Settings, job_name: str) -> Any:
     except Exception as exc:
         raise RuntimeError(f"Cloud Run Job {job_name} failed: {exc}") from exc
     if execution.failed_count or not execution.succeeded_count:
-        raise RuntimeError(f"Cloud Run Job {job_name} failed: execution {execution.name}")
+        raise RuntimeError(
+            f"Cloud Run Job {job_name} failed: execution {execution.name}"
+        )
     return execution
 
 
@@ -178,7 +182,9 @@ def latest_metadata(settings: Settings) -> dict[str, Any]:
         bucket = _storage_bucket(settings.gcp_project_id, settings.gcp_bucket_artifacts)
         pointer = bucket.blob("latest.txt")
         if not pointer.exists():
-            raise FileNotFoundError(f"No latest.txt in gs://{settings.gcp_bucket_artifacts}")
+            raise FileNotFoundError(
+                f"No latest.txt in gs://{settings.gcp_bucket_artifacts}"
+            )
         run_id = pointer.download_as_text().strip()
         return json.loads(bucket.blob(f"{run_id}/metadata.json").download_as_text())
     root = Path(settings.artifacts_dir)
@@ -222,9 +228,7 @@ def _load_predictions(settings: Settings) -> pd.DataFrame:
     if settings.deployment_mode == "gcp":
         from google.api_core.exceptions import NotFound  # noqa: PLC0415
 
-        table_id = (
-            f"{settings.gcp_project_id}.{settings.bq_dataset}.{settings.bq_predictions_table}"
-        )
+        table_id = settings.bq_table_id(settings.bq_predictions_table)
         query = f"SELECT {', '.join(_PREDICTION_COLUMNS)} FROM `{table_id}`"
         try:
             frame = (
@@ -236,9 +240,15 @@ def _load_predictions(settings: Settings) -> pd.DataFrame:
             frame = pd.DataFrame(columns=_PREDICTION_COLUMNS)
     else:
         path = Path(settings.artifacts_dir) / "predictions.csv"
-        frame = pd.read_csv(path) if path.exists() else pd.DataFrame(columns=_PREDICTION_COLUMNS)
+        frame = (
+            pd.read_csv(path)
+            if path.exists()
+            else pd.DataFrame(columns=_PREDICTION_COLUMNS)
+        )
     # Stable order so pages don't shift between refreshes (the table has no row id).
-    return frame.sort_values(PREDICTION_ID_COLS, kind="mergesort").reset_index(drop=True)
+    return frame.sort_values(PREDICTION_ID_COLS, kind="mergesort").reset_index(
+        drop=True
+    )
 
 
 def query_predictions(  # noqa: PLR0913 — mirrors the endpoint query params
@@ -263,12 +273,14 @@ def query_predictions(  # noqa: PLR0913 — mirrors the endpoint query params
         "total_predictions": len(filtered),
         "predictions": [
             {
-                "OPERA": str(row.OPERA),
-                "TIPOVUELO": str(row.TIPOVUELO),
-                "MES": int(row.MES),
-                RESULT_DELAY_KEY: int(getattr(row, PREDICTION_COL)),
+                "OPERA": str(opera),
+                "TIPOVUELO": str(tipovuelo),
+                "MES": int(mes),
+                RESULT_DELAY_KEY: int(prediction),
             }
-            for row in rows.itertuples(index=False)
+            for opera, tipovuelo, mes, prediction in rows[
+                _PREDICTION_COLUMNS
+            ].itertuples(index=False, name=None)
         ],
     }
 
