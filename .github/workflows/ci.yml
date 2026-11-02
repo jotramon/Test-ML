@@ -1,6 +1,6 @@
-# Continuous integration: lint, the three test suites, the stress test against
-# a local API, and a build of every container image. Needs no GCP access, so
-# it runs on every GitFlow branch and pull request.
+# Continuous integration: lint, format and type checks, the three test suites,
+# the stress test against a local API, and a build of every container image.
+# Needs no GCP access, so it runs on every GitFlow branch and pull request.
 name: CI
 
 on:
@@ -10,6 +10,7 @@ on:
     branches: [main, develop]
   workflow_dispatch:
 
+# Third-party actions are pinned to commit SHAs (version in the comment).
 permissions:
   contents: read
 
@@ -25,8 +26,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           version: ${{ env.UV_VERSION }}
           python-version: ${{ env.PYTHON_VERSION }}
@@ -34,12 +35,14 @@ jobs:
       # Application code only: the provided notebook and test files predate
       # this solution and are kept as delivered.
       - run: uv run ruff check challenge --exclude challenge/exploration.ipynb
+      - run: uv run ruff format --check challenge --exclude challenge/exploration.ipynb
+      - run: uv run mypy
 
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           version: ${{ env.UV_VERSION }}
           python-version: ${{ env.PYTHON_VERSION }}
@@ -47,7 +50,7 @@ jobs:
       - run: make model-test
       - run: make pipelines-test
       - run: make api-test
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: test-reports
@@ -57,8 +60,8 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           version: ${{ env.UV_VERSION }}
           python-version: ${{ env.PYTHON_VERSION }}
@@ -76,7 +79,7 @@ jobs:
           cat api.log
           exit 1
       - run: make stress-test
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: stress-test-report
@@ -88,6 +91,6 @@ jobs:
       matrix:
         image: [training, serving, api]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build Dockerfile.${{ matrix.image }}
         run: docker build --file Dockerfile.${{ matrix.image }} --tag ${{ matrix.image }}:ci .
