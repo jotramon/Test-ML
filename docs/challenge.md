@@ -328,3 +328,69 @@ make stress-test      # against STRESS_URL (default http://127.0.0.1:8000)
 - **Stress test (deployed):** 100 users for 60 s from a laptop, 9,263 requests, 0 failures, median
   190 ms (mostly network latency).
 - **`bootstrap.sh` end to end** (exit code 0): builds the three images, deploys both jobs and the API.
+
+## Part VI — Infrastructure and CI/CD
+
+### Infrastructure script
+
+[`infra/bootstrap.sh`](../infra/bootstrap.sh) provisions a fresh project end to end with `gcloud`
+and `bq`, then builds and deploys everything:
+
+| Section | What it does |
+|---|---|
+| 1–4 | APIs, the single service account and its roles, buckets, BigQuery (Part II) |
+| 5 | Artifact Registry, with a cleanup policy: keep the 5 newest versions of each image, delete older ones after 7 days |
+| 6 | Workload Identity Federation for GitHub Actions |
+| 7 | The three images, built in Cloud Build as the service account |
+| 8–9 | The two Cloud Run Jobs and the API service |
+| 10 | Access to the deployed resources: `run.developer` on the jobs and the API, public access to the API |
+
+`DEPLOY_ONLY=1` runs only sections 7–9. Provisioning needs project-owner rights; building and
+deploying does not, so CD runs this mode as the service account.
+
+### CI — [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
+
+Runs on every GitFlow branch (`main`, `develop`, `feature/**`, `release/**`, `hotfix/**`) and on
+pull requests to `main` and `develop`. It needs no GCP access.
+
+| Job | What it checks |
+|---|---|
+| `lint` | `ruff` on the application code (the provided notebook and test files are left as delivered) |
+| `test` | `make model-test`, `make pipelines-test`, `make api-test`; reports uploaded as an artifact |
+| `stress-test` | Local mode end to end (train, serve, start the API), then `make stress-test` |
+| `docker` | Builds the three images, so a broken Dockerfile fails before reaching `main` |
+
+### CD — [`.github/workflows/cd.yml`](../.github/workflows/cd.yml)
+
+Runs when CI succeeds on `main` (official releases, per GitFlow), or manually. It deploys the
+commit CI validated: builds the images in Cloud Build tagged with the commit SHA, redeploys both
+jobs and the API, and smoke-tests `/health` and `/pipeline/predict/results`. Deployments are
+queued, never run in parallel.
+
+### Design decisions
+
+- **No service account keys.** GitHub Actions authenticates through Workload Identity Federation
+  with short-lived OIDC tokens. The provider only accepts tokens from this repository's `main`
+  branch, so no other branch, fork or repository can deploy. The provider name and service
+  account in `cd.yml` are identifiers, not secrets.
+- **One service account, as the brief requires**, so it is both the runtime identity and the
+  deployer. Its deploy rights are scoped as tightly as the services allow: `run.developer` only on
+  the two jobs and the API, `actAs` only on itself, and storage admin only on the build bucket.
+  The project-level roles are read-only (`run.viewer`, `logging.viewer`) or limited to submitting
+  builds (`cloudbuild.builds.editor`).
+- **CD reuses `bootstrap.sh`** instead of duplicating its build and deploy commands, so a manual
+  deployment and CD can't drift apart.
+- **Public access is an IAM binding, not a deploy flag**, so a `DEPLOY_ONLY` run never needs
+  permission to change who can call the API.
+
+### Verification
+
+- **`bootstrap.sh` end to end** (exit code 0) with all ten sections, re-run on the existing
+  project: it creates the federation pool and provider, applies the cleanup policy, and redeploys
+  the jobs and the API. `DRY_RUN=1` with and without `DEPLOY_ONLY=1` prints the expected plan.
+- **IAM after the run:** `run.developer` is the only service account role on each job; the API
+  has `run.developer` for the service account and `run.invoker` for `allUsers`.
+- **The API still works with the scoped roles:** `/pipeline/predict` returned 200 after the
+  redeploy.
+- **CI:** the workflow syntax is valid and every step runs locally (lint, the three suites, the
+  local stress test).

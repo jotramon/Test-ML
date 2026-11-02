@@ -7,6 +7,12 @@
 # Usage:
 #   GCP_PROJECT_ID=my-project ./infra/bootstrap.sh
 #   DRY_RUN=1 GCP_PROJECT_ID=my-project ./infra/bootstrap.sh   # print commands only
+#   DEPLOY_ONLY=1 GCP_PROJECT_ID=my-project ./infra/bootstrap.sh # build + deploy (CD)
+#
+# A full run provisions everything (APIs, IAM, buckets, BigQuery, registry,
+# GitHub Actions identity) and then builds and deploys. DEPLOY_ONLY=1 skips the
+# provisioning, which needs project-owner rights, so CD can run as the
+# challenge's service account.
 #
 # Variable names match challenge/config.py, so the same values configure the
 # pipelines and the API.
@@ -26,6 +32,13 @@ BQ_PREDICTIONS_TABLE="${BQ_PREDICTIONS_TABLE:-predictions}"
 TRAINING_JOB="${TRAINING_JOB:-mle-training}"
 SERVING_JOB="${SERVING_JOB:-mle-serving}"
 API_SERVICE="${API_SERVICE:-mle-api}"
+WIF_POOL="${WIF_POOL:-github}"
+WIF_PROVIDER="${WIF_PROVIDER:-github-actions}"
+# owner/repo allowed to deploy through Workload Identity Federation; defaults
+# to the origin remote.
+GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" remote get-url origin 2>/dev/null \
+  | sed -nE 's#.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$#\1#p')}"
+DEPLOY_ONLY="${DEPLOY_ONLY:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 
 SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT_NAME}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
@@ -79,6 +92,9 @@ retry() {
   done
 }
 
+# True unless DEPLOY_ONLY=1.
+provisioning() { [[ "${DEPLOY_ONLY}" != "1" ]]; }
+
 # Succeed if the resource checked by the given command exists.
 # In dry-run mode nothing is queried and every resource counts as missing.
 exists() {
@@ -86,12 +102,17 @@ exists() {
   "$@" >/dev/null 2>&1
 }
 
-# --- 1. project and APIs -----------------------------------------------------
-
 log "Project ${GCP_PROJECT_ID} (${GCP_REGION})"
 run gcloud config set project "${GCP_PROJECT_ID}"
+
+if provisioning; then
+
+# --- 1. APIs -----------------------------------------------------------------
+
 run gcloud services enable \
   iam.googleapis.com \
+  iamcredentials.googleapis.com \
+  sts.googleapis.com \
   storage.googleapis.com \
   bigquery.googleapis.com \
   logging.googleapis.com \
@@ -106,15 +127,28 @@ if ! exists gcloud iam service-accounts describe "${SERVICE_ACCOUNT_EMAIL}"; the
   run gcloud iam service-accounts create "${SERVICE_ACCOUNT_NAME}" \
     --display-name="MLE challenge pipelines and API"
 fi
-# Project-level roles: BigQuery query/load jobs and table access, and writing
-# logs (required for Cloud Build when it runs as this account).
-for role in roles/bigquery.jobUser roles/bigquery.dataEditor roles/logging.logWriter; do
+# Project-level roles:
+#   runtime  BigQuery query/load jobs and table access; logs (also needed by
+#            Cloud Build running as this account); run.viewer so the API can
+#            wait on job runs (run.operations.get exists only at project level).
+#   deploy   (CD runs as this account) submitting builds, reading their logs,
+#            calling APIs in the project.
+PROJECT_ROLES=(
+  roles/bigquery.jobUser roles/bigquery.dataEditor roles/logging.logWriter roles/run.viewer
+  roles/cloudbuild.builds.editor roles/logging.viewer roles/serviceusage.serviceUsageConsumer
+)
+for role in "${PROJECT_ROLES[@]}"; do
   run gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
     --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
     --role="${role}" \
     --condition=None \
     --quiet --format=none
 done
+# Deploying jobs/services and running builds *as* this account requires actAs
+# on it, granted on the account itself rather than project-wide.
+run gcloud iam service-accounts add-iam-policy-binding "${SERVICE_ACCOUNT_EMAIL}" \
+  --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
+  --role=roles/iam.serviceAccountUser --format=none
 
 # --- 3. Cloud Storage --------------------------------------------------------
 
@@ -134,10 +168,11 @@ run gcloud storage buckets add-iam-policy-binding "gs://${GCP_BUCKET_INPUT}" \
 run gcloud storage buckets add-iam-policy-binding "gs://${GCP_BUCKET_ARTIFACTS}" \
   --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
   --role=roles/storage.objectAdmin --format=none
-# Cloud Build reads the uploaded source from the build bucket.
+# The build bucket only holds source tarballs: CD uploads them (gcloud also
+# checks the bucket itself, hence admin on this bucket) and Cloud Build reads them.
 run gcloud storage buckets add-iam-policy-binding "gs://${GCP_BUCKET_BUILD}" \
   --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
-  --role=roles/storage.objectViewer --format=none
+  --role=roles/storage.admin --format=none
 
 log "Uploading input data to gs://${GCP_BUCKET_INPUT}"
 run gcloud storage cp \
@@ -166,7 +201,7 @@ run bq --project_id="${GCP_PROJECT_ID}" --location="${GCP_REGION}" load \
   "gs://${GCP_BUCKET_INPUT}/serving_input.csv" \
   "${SERVING_INPUT_SCHEMA}"
 
-# --- 5. container registry and images ---------------------------------------
+# --- 5. container registry --------------------------------------------------
 
 log "Artifact Registry ${REGISTRY}"
 if ! exists gcloud artifacts repositories describe "${AR_REPOSITORY}" --location="${GCP_REGION}"; then
@@ -179,6 +214,51 @@ run gcloud artifacts repositories add-iam-policy-binding "${AR_REPOSITORY}" \
   --location="${GCP_REGION}" \
   --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
   --role=roles/artifactregistry.writer --format=none
+# Every build pushes ~1 GB per image: keep the 5 newest versions of each and
+# delete older ones after a week (Keep wins over Delete).
+CLEANUP_POLICY="$(mktemp)"
+trap 'rm -f "${CLEANUP_POLICY}"' EXIT
+cat > "${CLEANUP_POLICY}" <<'POLICY'
+[
+  {"name": "keep-recent", "action": {"type": "Keep"}, "mostRecentVersions": {"keepCount": 5}},
+  {"name": "delete-old", "action": {"type": "Delete"}, "condition": {"olderThan": "7d"}}
+]
+POLICY
+run gcloud artifacts repositories set-cleanup-policies "${AR_REPOSITORY}" \
+  --location="${GCP_REGION}" \
+  --policy="${CLEANUP_POLICY}" \
+  --no-dry-run --format=none
+
+# --- 6. GitHub Actions identity (Workload Identity Federation) ---------------
+
+# CD authenticates with short-lived OIDC tokens instead of a key file. Only
+# workflows of GITHUB_REPOSITORY running on main may impersonate the account.
+if [[ -n "${GITHUB_REPOSITORY}" ]]; then
+  log "Workload Identity Federation for ${GITHUB_REPOSITORY}"
+  PROJECT_NUMBER="$(gcloud projects describe "${GCP_PROJECT_ID}" --format='value(projectNumber)')"
+  if ! exists gcloud iam workload-identity-pools describe "${WIF_POOL}" --location=global; then
+    run gcloud iam workload-identity-pools create "${WIF_POOL}" \
+      --location=global --display-name="GitHub Actions"
+  fi
+  if ! exists gcloud iam workload-identity-pools providers describe "${WIF_PROVIDER}" \
+      --location=global --workload-identity-pool="${WIF_POOL}"; then
+    run gcloud iam workload-identity-pools providers create-oidc "${WIF_PROVIDER}" \
+      --location=global \
+      --workload-identity-pool="${WIF_POOL}" \
+      --issuer-uri="https://token.actions.githubusercontent.com" \
+      --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \
+      --attribute-condition="assertion.repository == '${GITHUB_REPOSITORY}' && assertion.ref == 'refs/heads/main'"
+  fi
+  run gcloud iam service-accounts add-iam-policy-binding "${SERVICE_ACCOUNT_EMAIL}" \
+    --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WIF_POOL}/attribute.repository/${GITHUB_REPOSITORY}" \
+    --role=roles/iam.workloadIdentityUser --format=none
+else
+  log "No GitHub remote found; skipping Workload Identity Federation"
+fi
+
+fi  # provisioning
+
+# --- 7. images ---------------------------------------------------------------
 
 # Build in Cloud Build (native linux/amd64, no local Docker needed), as the
 # challenge's service account.
@@ -200,7 +280,7 @@ build_image Dockerfile.training "${TRAINING_IMAGE}"
 build_image Dockerfile.serving "${SERVING_IMAGE}"
 build_image Dockerfile.api "${API_IMAGE}"
 
-# --- 6. pipelines as Cloud Run Jobs ------------------------------------------
+# --- 8. pipelines as Cloud Run Jobs ------------------------------------------
 
 RUNTIME_ENV="DEPLOYMENT_MODE=gcp,GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION}"
 RUNTIME_ENV+=",GCP_BUCKET_INPUT=${GCP_BUCKET_INPUT},GCP_BUCKET_ARTIFACTS=${GCP_BUCKET_ARTIFACTS}"
@@ -227,34 +307,44 @@ deploy_job() {
 deploy_job "${TRAINING_JOB}" "${TRAINING_IMAGE}"
 deploy_job "${SERVING_JOB}" "${SERVING_IMAGE}"
 
-# --- 7. control API as a Cloud Run service -----------------------------------
+# --- 9. control API as a Cloud Run service -----------------------------------
 
-# The API executes the jobs (invoker, scoped to the two jobs) and waits on them
-# (run.operations.get exists only at project level, hence a read-only viewer
-# binding there).
-for job in "${TRAINING_JOB}" "${SERVING_JOB}"; do
-  run gcloud run jobs add-iam-policy-binding "${job}" \
-    --region="${GCP_REGION}" \
-    --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
-    --role=roles/run.invoker --format=none
-done
-run gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
-  --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
-  --role=roles/run.viewer --condition=None --quiet --format=none
-
-# Public, because evaluators call it directly. --timeout covers a synchronous
-# training run; --max-instances caps the cost of a public endpoint.
+# --timeout covers a synchronous training run; --max-instances caps the cost of
+# a public endpoint. Public access is granted below, as an IAM binding, so a
+# DEPLOY_ONLY run never needs permission to change it.
 log "Cloud Run service ${API_SERVICE}"
 run gcloud run deploy "${API_SERVICE}" \
   --image="${API_IMAGE}" \
   --region="${GCP_REGION}" \
   --service-account="${SERVICE_ACCOUNT_EMAIL}" \
   --set-env-vars="${RUNTIME_ENV},TRAINING_JOB=${TRAINING_JOB},SERVING_JOB=${SERVING_JOB}" \
-  --allow-unauthenticated \
   --timeout=900 \
   --cpu=1 \
   --memory=1Gi \
-  --max-instances=3
+  --max-instances=3 \
+  --quiet
+
+# --- 10. access to the deployed resources ------------------------------------
+
+if provisioning; then
+  # run.developer, scoped to the two jobs and the API: the API runs the jobs,
+  # and CD redeploys all three, without project-wide Cloud Run rights.
+  for job in "${TRAINING_JOB}" "${SERVING_JOB}"; do
+    run gcloud run jobs add-iam-policy-binding "${job}" \
+      --region="${GCP_REGION}" \
+      --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
+      --role=roles/run.developer --format=none
+  done
+  run gcloud run services add-iam-policy-binding "${API_SERVICE}" \
+    --region="${GCP_REGION}" \
+    --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
+    --role=roles/run.developer --format=none
+  # Public, because evaluators call the API directly.
+  run gcloud run services add-iam-policy-binding "${API_SERVICE}" \
+    --region="${GCP_REGION}" \
+    --member=allUsers \
+    --role=roles/run.invoker --format=none
+fi
 
 # --- summary -----------------------------------------------------------------
 
@@ -273,6 +363,11 @@ printf '\nRun the pipelines with:\n'
 for job in "${TRAINING_JOB}" "${SERVING_JOB}"; do
   printf '  gcloud run jobs execute %s --region=%s --wait\n' "${job}" "${GCP_REGION}"
 done
+if provisioning && [[ -n "${GITHUB_REPOSITORY}" && "${DRY_RUN}" != "1" ]]; then
+  printf '\nCD (.github/workflows/cd.yml):\n  workload_identity_provider: %s\n  service_account: %s\n' \
+    "projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WIF_POOL}/providers/${WIF_PROVIDER}" \
+    "${SERVICE_ACCOUNT_EMAIL}"
+fi
 if [[ "${DRY_RUN}" != "1" ]]; then
   printf '\nAPI: %s\n' "$(gcloud run services describe "${API_SERVICE}" \
     --region="${GCP_REGION}" --format='value(status.url)')"

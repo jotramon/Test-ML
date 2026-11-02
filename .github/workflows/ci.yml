@@ -1,0 +1,93 @@
+# Continuous integration: lint, the three test suites, the stress test against
+# a local API, and a build of every container image. Needs no GCP access, so
+# it runs on every GitFlow branch and pull request.
+name: CI
+
+on:
+  push:
+    branches: [main, develop, "feature/**", "release/**", "hotfix/**"]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.13.6"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: uv sync --frozen --all-extras
+      # Application code only: the provided notebook and test files predate
+      # this solution and are kept as delivered.
+      - run: uv run ruff check challenge --exclude challenge/exploration.ipynb
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: uv sync --frozen --all-extras
+      - run: make model-test
+      - run: make pipelines-test
+      - run: make api-test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports
+          path: reports/
+
+  stress-test:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: uv sync --frozen --all-extras
+      # Local mode end to end: train, score, then serve the predictions.
+      - run: make training-local
+      - run: make serving-local
+      - name: Start the API
+        run: |
+          make run-api-local > api.log 2>&1 &
+          for _ in $(seq 30); do
+            curl -sf http://127.0.0.1:8000/health && exit 0
+            sleep 1
+          done
+          cat api.log
+          exit 1
+      - run: make stress-test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stress-test-report
+          path: reports/stress-test.html
+
+  docker:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [training, serving, api]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Dockerfile.${{ matrix.image }}
+        run: docker build --file Dockerfile.${{ matrix.image }} --tag ${{ matrix.image }}:ci .
