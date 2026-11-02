@@ -271,3 +271,60 @@ gcloud run jobs execute mle-serving --region=us-central1 --wait   # GCS input ->
 - **Cloud Run:** execution `mle-serving-pxvt6` succeeded and rewrote the `predictions` table
   (100 rows, 52 delays).
 - **`bootstrap.sh` end to end** (exit code 0): builds both images and deploys both jobs.
+
+## Part V — Pipeline control API
+
+[`challenge/api/api.py`](../challenge/api/api.py) runs as the Cloud Run service `mle-api`.
+
+```bash
+make run-api-local    # local mode: pipelines run in-process, no GCP credentials needed
+make api-test
+make stress-test      # against STRESS_URL (default http://127.0.0.1:8000)
+```
+
+### Endpoints
+
+| Endpoint | Behavior | Errors |
+|---|---|---|
+| `GET /health` | `{"status": "ok"}` | — |
+| `POST /pipeline/train` | Runs `mle-training` and waits; returns the execution id plus the new model's `metadata.json` (version, row counts, metrics) | 422 if `raw_flights` is empty, 409 if a training run is in progress, 500 if the job fails |
+| `POST /pipeline/predict` | Runs `mle-serving` and waits; returns the execution id, the total and the first 10 predictions | 422 if there is no trained model, 409 if a serving run is in progress, 500 if the job fails |
+| `GET /pipeline/predict/results` | Paginated predictions; `opera`, `tipovuelo`, `mes` take comma-separated lists | 422 for an invalid `mes`, `page < 1` or `page_size` outside 1–100 |
+
+### Design decisions
+
+- **Synchronous runs through the Cloud Run Jobs API** (`run_job(...).result()`), as the README
+  asks. The service timeout is 15 minutes, the same as the jobs' task timeout.
+- **One run per pipeline at a time.** A second `POST` while a run is in progress returns 409,
+  so a public endpoint cannot stack parallel executions, and `/train` always returns the metadata
+  of its own run. The check combines a lock per instance with Cloud Run's list of active
+  executions, so it holds across instances and for runs started by hand.
+- **Sync endpoints.** FastAPI runs them in its threadpool, so a training run that blocks for
+  minutes does not stall `/health` or `/results` on the same instance.
+- **Results are served from memory.** Each instance keeps a snapshot of the `predictions` table
+  for 30 seconds (refreshed right after `/pipeline/predict`) instead of querying BigQuery on every
+  request. The table only changes when the serving job runs, and the stress test then measures
+  the API rather than BigQuery's per-query latency and cost.
+- **Stable ordering.** The `predictions` table has no row id, so pages are sorted by
+  `OPERA, TIPOVUELO, MES`. "First 10 predictions" means the first page in that order.
+- **Local mode** runs the same pipelines in-process (`training.main`, `serving.main`), so the API
+  and the stress test work without GCP.
+- **Least privilege:** the service account can run only the two jobs (`roles/run.invoker` on each).
+  Waiting on a run needs `run.operations.get`, which exists only at project level, so it also gets
+  the read-only `roles/run.viewer` on the project. `--max-instances=3` caps the cost of a public endpoint.
+- **Pre-flight checks are free:** the row count comes from table metadata, not a query.
+
+### Verification
+
+- **Unit tests:** `make api-test` passes 16/16 (the 14 provided plus two for the 409); `make model-test` (40) and `make pipelines-test`
+  (8) still pass.
+- **Local, end to end:** train → predict → filtered results all return the expected payloads;
+  invalid `mes` and `page_size` return 422; a second `/train` during a run returns 409.
+- **Stress test (local):** 100 users for 60 s, ~168,000 requests, 0 failures, median 10 ms.
+- **Cloud Run** (`https://mle-api-475124136438.us-central1.run.app`): `/pipeline/train` returned the
+  new model's metadata after 113 s (execution `mle-training-c2jrk`), `/pipeline/predict` ran
+  `mle-serving-zvr6w` and returned the first 10 of 100 predictions, filtered results match the
+  local run, and a `/train` during a run returned 409.
+- **Stress test (deployed):** 100 users for 60 s from a laptop, 9,263 requests, 0 failures, median
+  190 ms (mostly network latency).
+- **`bootstrap.sh` end to end** (exit code 0): builds the three images, deploys both jobs and the API.
