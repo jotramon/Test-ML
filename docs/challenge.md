@@ -392,5 +392,9 @@ queued, never run in parallel.
   has `run.developer` for the service account and `run.invoker` for `allUsers`.
 - **The API still works with the scoped roles:** `/pipeline/predict` returned 200 after the
   redeploy.
-- **CI:** the workflow syntax is valid and every step runs locally (lint, the three suites, the
-  local stress test).
+- **CI on GitHub:** the first run (merge of `feature/cicd` into `develop`) passed every job in
+  2m23s: lint, model 40/40, pipelines 8/8, api 16/16, the local stress test (38,837 requests,
+  0 failures) and the three image builds.
+- **CD on GitHub:** the `v1.0.0` release on `main` triggered CI and then CD, which authenticated
+  through Workload Identity Federation, built and deployed in about 14 minutes and passed the
+  smoke test. The API and both jobs then ran the images tagged `2f9e268`, the release commit.
