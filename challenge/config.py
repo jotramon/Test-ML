@@ -21,6 +21,8 @@ class Settings:
     bq_dataset: str
     bq_raw_table: str
     bq_predictions_table: str
+    training_job: str = "mle-training"
+    serving_job: str = "mle-serving"
 
     def __post_init__(self) -> None:
         """Validate required GCP vars when deployment_mode is 'gcp'."""
@@ -61,6 +63,8 @@ def get_settings() -> Settings:
         bq_dataset=os.environ.get("BQ_DATASET", "mle_challenge"),
         bq_raw_table=os.environ.get("BQ_RAW_TABLE", "raw_flights"),
         bq_predictions_table=os.environ.get("BQ_PREDICTIONS_TABLE", "predictions"),
+        training_job=os.environ.get("TRAINING_JOB", "mle-training"),
+        serving_job=os.environ.get("SERVING_JOB", "mle-serving"),
     )
 
 

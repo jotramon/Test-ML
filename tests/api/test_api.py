@@ -199,3 +199,29 @@ class TestPredictResultsFilters(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["page"], 3)
         self.assertEqual(body["page_size"], 25)
+
+
+class TestPipelineConcurrency(unittest.TestCase):
+    """A second run of a pipeline that is still running is rejected with 409."""
+
+    def setUp(self):
+        self.client = TestClient(app, raise_server_exceptions=True)
+
+    def test_train_returns_409_when_already_running(self):
+        from challenge.api.utils import JobAlreadyRunningError
+
+        with patch("challenge.api.api._check_raw_flights", return_value=100), \
+             patch("challenge.api.api._submit_and_wait",
+                   side_effect=JobAlreadyRunningError("mle-training is already running")):
+            response = self.client.post("/pipeline/train")
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("already running", response.json()["detail"])
+
+    def test_predict_returns_409_when_already_running(self):
+        from challenge.api.utils import JobAlreadyRunningError
+
+        with patch("challenge.api.api._check_model_exists", return_value=True), \
+             patch("challenge.api.api._submit_and_wait",
+                   side_effect=JobAlreadyRunningError("mle-serving is already running")):
+            response = self.client.post("/pipeline/predict")
+        self.assertEqual(response.status_code, 409)

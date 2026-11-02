@@ -25,6 +25,7 @@ AR_REPOSITORY="${AR_REPOSITORY:-mle-challenge}"
 BQ_PREDICTIONS_TABLE="${BQ_PREDICTIONS_TABLE:-predictions}"
 TRAINING_JOB="${TRAINING_JOB:-mle-training}"
 SERVING_JOB="${SERVING_JOB:-mle-serving}"
+API_SERVICE="${API_SERVICE:-mle-api}"
 DRY_RUN="${DRY_RUN:-0}"
 
 SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT_NAME}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
@@ -194,8 +195,10 @@ build_image() {
 
 TRAINING_IMAGE="${REGISTRY}/training:${IMAGE_TAG}"
 SERVING_IMAGE="${REGISTRY}/serving:${IMAGE_TAG}"
+API_IMAGE="${REGISTRY}/api:${IMAGE_TAG}"
 build_image Dockerfile.training "${TRAINING_IMAGE}"
 build_image Dockerfile.serving "${SERVING_IMAGE}"
+build_image Dockerfile.api "${API_IMAGE}"
 
 # --- 6. pipelines as Cloud Run Jobs ------------------------------------------
 
@@ -224,6 +227,35 @@ deploy_job() {
 deploy_job "${TRAINING_JOB}" "${TRAINING_IMAGE}"
 deploy_job "${SERVING_JOB}" "${SERVING_IMAGE}"
 
+# --- 7. control API as a Cloud Run service -----------------------------------
+
+# The API executes the jobs (invoker, scoped to the two jobs) and waits on them
+# (run.operations.get exists only at project level, hence a read-only viewer
+# binding there).
+for job in "${TRAINING_JOB}" "${SERVING_JOB}"; do
+  run gcloud run jobs add-iam-policy-binding "${job}" \
+    --region="${GCP_REGION}" \
+    --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
+    --role=roles/run.invoker --format=none
+done
+run gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
+  --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
+  --role=roles/run.viewer --condition=None --quiet --format=none
+
+# Public, because evaluators call it directly. --timeout covers a synchronous
+# training run; --max-instances caps the cost of a public endpoint.
+log "Cloud Run service ${API_SERVICE}"
+run gcloud run deploy "${API_SERVICE}" \
+  --image="${API_IMAGE}" \
+  --region="${GCP_REGION}" \
+  --service-account="${SERVICE_ACCOUNT_EMAIL}" \
+  --set-env-vars="${RUNTIME_ENV},TRAINING_JOB=${TRAINING_JOB},SERVING_JOB=${SERVING_JOB}" \
+  --allow-unauthenticated \
+  --timeout=900 \
+  --cpu=1 \
+  --memory=1Gi \
+  --max-instances=3
+
 # --- summary -----------------------------------------------------------------
 
 log "Done. Runtime configuration:"
@@ -241,3 +273,7 @@ printf '\nRun the pipelines with:\n'
 for job in "${TRAINING_JOB}" "${SERVING_JOB}"; do
   printf '  gcloud run jobs execute %s --region=%s --wait\n' "${job}" "${GCP_REGION}"
 done
+if [[ "${DRY_RUN}" != "1" ]]; then
+  printf '\nAPI: %s\n' "$(gcloud run services describe "${API_SERVICE}" \
+    --region="${GCP_REGION}" --format='value(status.url)')"
+fi
