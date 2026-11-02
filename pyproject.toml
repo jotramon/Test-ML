@@ -4,9 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ml-challenge-latam"
-version = "0.1.0"
-authors = [{ name = "candidate", email = "tbd@example.com" }]
-description = "Model description"
+version = "1.0.2"
+authors = [{ name = "Javier Omar Tramon Hidalgo", email = "jotramon@uc.cl" }]
+description = "Flight delay prediction on GCP: training and serving pipelines on Cloud Run Jobs, controlled by a FastAPI service"
 readme = "README.md"
 requires-python = ">=3.12"
 
@@ -38,6 +38,8 @@ dev = [
     "seaborn>=0.12,<1",
     "twine>=6.2,<7",
     "httpx>=0.28.1",
+    "mypy>=1.10,<2",
+    "pandas-stubs>=2.2,<3",
 ]
 test = [
     "coverage>=7.14,<8",
@@ -103,3 +105,13 @@ max-complexity = 50
 
 [tool.ruff.lint.pycodestyle]
 max-line-length = 100
+
+[tool.mypy]
+python_version = "3.12"
+files = ["challenge"]
+ignore_missing_imports = true
+
+# google-cloud-storage ships no py.typed marker; read its sources for types.
+[[tool.mypy.overrides]]
+module = ["google.cloud.storage", "google.cloud.storage.*"]
+follow_untyped_imports = true

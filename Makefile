@@ -44,7 +44,7 @@ model-test:       ## Run model unit tests with coverage
 	mkdir reports || true
 	uv run pytest --cov-config=.coveragerc --cov-report term --cov-report html:reports/html --cov-report xml:reports/coverage.xml --junitxml=reports/junit.xml --cov=challenge tests/model
 
-.PHONY: pipeline-test
+.PHONY: pipelines-test
 pipelines-test:    ## Run pipeline integration tests with coverage
 	mkdir reports || true
 	uv run pytest --cov-config=.coveragerc --cov-report term --cov-report html:reports/html --cov-report xml:reports/coverage.xml --junitxml=reports/junit.xml --cov=challenge tests/pipelines
