@@ -1,4 +1,4 @@
-"""Data-reader and Artifactor local implementation."""
+"""Local filesystem implementations of the data reader and artifact store."""
 
 from __future__ import annotations
 
@@ -83,6 +83,7 @@ class LocalArtifactStore:
 
         <ARTIFACTS_DIR>/
             <run_id>/model.joblib
+            <run_id>/metadata.json   ← version, row counts, holdout metrics
             latest.txt           ← contains the most-recent run_id
     """
 
@@ -90,7 +91,7 @@ class LocalArtifactStore:
         return Path(os.environ.get("ARTIFACTS_DIR", "artifacts"))
 
     def save(self, model: Any, run_id: str) -> str:
-        """Save model to <ARTIFACTS_DIR>/<run_id>/model.joblib and update latest.txt."""
+        """Save the model (and its metadata) under <ARTIFACTS_DIR>/<run_id>/; update latest.txt."""
         if model._model is None:
             raise ValueError("Cannot save an untrained model; call fit() first")
         root = self._root()

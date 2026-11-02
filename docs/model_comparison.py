@@ -47,7 +47,9 @@ def _balanced_logistic_regression(features: pd.DataFrame, labels: pd.Series) -> 
     return LogisticRegression(class_weight=weights).fit(features, labels)
 
 
-def _unbalanced_logistic_regression(features: pd.DataFrame, labels: pd.Series) -> object:
+def _unbalanced_logistic_regression(
+    features: pd.DataFrame, labels: pd.Series
+) -> object:
     return LogisticRegression().fit(features, labels)
 
 
@@ -62,7 +64,9 @@ TRAINERS: dict[str, Trainer] = {
 }
 
 
-def _cv_recall(train: Trainer, features: pd.DataFrame, labels: pd.Series) -> list[float]:
+def _cv_recall(
+    train: Trainer, features: pd.DataFrame, labels: pd.Series
+) -> list[float]:
     """Return per-fold class-1 recall over stratified K folds."""
     recalls = []
     folds = StratifiedKFold(CV_FOLDS, shuffle=True, random_state=0)

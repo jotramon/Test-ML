@@ -1,4 +1,4 @@
-"""Data-reader implementation for BigQuery"""
+"""BigQuery implementation of the data reader."""
 
 from __future__ import annotations
 
@@ -8,13 +8,16 @@ import pandas as pd
 from google.cloud import bigquery
 
 from challenge.config import get_settings
-from challenge.connectors.protocols import build_predictions_frame
+from challenge.connectors.protocols import (
+    PREDICTION_COL,
+    PREDICTION_ID_COLS,
+    build_predictions_frame,
+)
 
+_PREDICTION_TYPES = {"OPERA": "STRING", "TIPOVUELO": "STRING", "MES": "INTEGER"}
 _PREDICTIONS_SCHEMA = [
-    bigquery.SchemaField("OPERA", "STRING"),
-    bigquery.SchemaField("TIPOVUELO", "STRING"),
-    bigquery.SchemaField("MES", "INTEGER"),
-    bigquery.SchemaField("prediction", "INTEGER"),
+    *(bigquery.SchemaField(col, _PREDICTION_TYPES[col]) for col in PREDICTION_ID_COLS),
+    bigquery.SchemaField(PREDICTION_COL, "INTEGER"),
 ]
 
 # The raw table stores the CSV columns under BigQuery-safe names
@@ -65,10 +68,13 @@ class BigQueryClient:
             dataset=settings.bq_dataset,
             raw_table=settings.bq_raw_table,
         )
-        return self._client.query(query).to_dataframe().rename(columns=_SOURCE_COLUMN_NAMES)
+        # REST download: the Storage Read API needs an extra package and IAM
+        # role for no gain at this size (five columns, ~68k rows).
+        frame = self._client.query(query).to_dataframe(create_bqstorage_client=False)
+        return frame.rename(columns=_SOURCE_COLUMN_NAMES)
 
     def write(self, predictions: list[int], identifiers: pd.DataFrame) -> None:
-        """Insert predictions into the configured BigQuery predictions table.
+        """Replace the configured BigQuery predictions table with these predictions.
 
         Each row contains ``OPERA``, ``TIPOVUELO``, ``MES`` (row-aligned with
         predictions) and ``prediction`` (0 or 1).  Uses ``WRITE_TRUNCATE`` to
@@ -76,12 +82,12 @@ class BigQueryClient:
         """
         settings = get_settings()
         frame = build_predictions_frame(predictions, identifiers)
-        table_id = (
-            f"{settings.gcp_project_id}.{settings.bq_dataset}.{settings.bq_predictions_table}"
-        )
+        table_id = settings.bq_table_id(settings.bq_predictions_table)
         job_config = bigquery.LoadJobConfig(
             schema=_PREDICTIONS_SCHEMA,
             write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
         )
-        job = self._client.load_table_from_dataframe(frame, table_id, job_config=job_config)
+        job = self._client.load_table_from_dataframe(
+            frame, table_id, job_config=job_config
+        )
         job.result()  # block until done; raises if the load job failed
