@@ -35,9 +35,13 @@ API_SERVICE="${API_SERVICE:-mle-api}"
 WIF_POOL="${WIF_POOL:-github}"
 WIF_PROVIDER="${WIF_PROVIDER:-github-actions}"
 # owner/repo allowed to deploy through Workload Identity Federation; defaults
-# to the origin remote.
-GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" remote get-url origin 2>/dev/null \
-  | sed -nE 's#.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$#\1#p')}"
+# to the origin remote, and stays empty (federation skipped) outside a clone.
+github_repository_from_remote() {
+  local url
+  url="$(git -C "$(dirname "${BASH_SOURCE[0]}")" remote get-url origin 2>/dev/null)" || return 0
+  sed -nE 's#.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$#\1#p' <<< "${url}"
+}
+GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-$(github_repository_from_remote)}"
 DEPLOY_ONLY="${DEPLOY_ONLY:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 

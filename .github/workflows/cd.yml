@@ -13,6 +13,7 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Third-party actions are pinned to commit SHAs (version in the comment).
 permissions:
   contents: read
   id-token: write
@@ -34,17 +35,17 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # The commit CI validated (workflow_run otherwise checks out main's tip).
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - uses: google-github-actions/auth@v2
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ env.SERVICE_ACCOUNT }}
 
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
 
       - name: Build and deploy
         run: |

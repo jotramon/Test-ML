@@ -26,6 +26,7 @@ class GCSArtifactStore:
 
         gs://<bucket>/
             <run_id>/model.joblib
+            <run_id>/metadata.json   ← version, row counts, holdout metrics
             latest.txt           ← contains the most-recent run_id
     """
 
@@ -62,7 +63,9 @@ class GCSArtifactStore:
         if run_id is None:
             latest = bucket.blob("latest.txt")
             if not latest.exists():
-                raise FileNotFoundError(f"No latest.txt in gs://{bucket_name}; train a model first")
+                raise FileNotFoundError(
+                    f"No latest.txt in gs://{bucket_name}; train a model first"
+                )
             run_id = latest.download_as_text().strip()
 
         payload = bucket.blob(f"{run_id}/model.joblib").download_as_bytes()
