@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from challenge.config import Settings
+from challenge.model import FEATURES_COLS
 from challenge.training import main
 
 

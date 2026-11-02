@@ -1,0 +1,63 @@
+# Continuous delivery: every release on main that passes CI is built in Cloud
+# Build and deployed to Cloud Run (both jobs and the API), then smoke-tested.
+#
+# Authenticates through Workload Identity Federation (no key file). The
+# provider only accepts tokens from this repository's main branch; both values
+# below are printed by infra/bootstrap.sh and are identifiers, not secrets.
+name: CD
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+# Never run two deployments at once; queue instead of cancelling one midway.
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT_ID: ml-test-513500
+  GCP_REGION: us-central1
+  API_SERVICE: mle-api
+  WORKLOAD_IDENTITY_PROVIDER: projects/475124136438/locations/global/workloadIdentityPools/github/providers/github-actions
+  SERVICE_ACCOUNT: mle-challenge@ml-test-513500.iam.gserviceaccount.com
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The commit CI validated (workflow_run otherwise checks out main's tip).
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and deploy
+        run: |
+          IMAGE_TAG="$(git rev-parse --short HEAD)" \
+          DEPLOY_ONLY=1 \
+          GCP_PROJECT_ID="${GCP_PROJECT_ID}" \
+          GCP_REGION="${GCP_REGION}" \
+          ./infra/bootstrap.sh
+
+      - name: Smoke test
+        run: |
+          url="$(gcloud run services describe "${API_SERVICE}" \
+            --region="${GCP_REGION}" --format='value(status.url)')"
+          curl -sSf "${url}/health"
+          curl -sSf "${url}/pipeline/predict/results?page_size=1"
+          echo "Deployed ${url}" >> "${GITHUB_STEP_SUMMARY}"

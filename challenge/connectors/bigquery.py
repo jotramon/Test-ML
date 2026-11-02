@@ -8,6 +8,30 @@ import pandas as pd
 from google.cloud import bigquery
 
 from challenge.config import get_settings
+from challenge.connectors.protocols import build_predictions_frame
+
+_PREDICTIONS_SCHEMA = [
+    bigquery.SchemaField("OPERA", "STRING"),
+    bigquery.SchemaField("TIPOVUELO", "STRING"),
+    bigquery.SchemaField("MES", "INTEGER"),
+    bigquery.SchemaField("prediction", "INTEGER"),
+]
+
+# The raw table stores the CSV columns under BigQuery-safe names
+# (see infra/bootstrap.sh); reads restore the names the model expects.
+_SOURCE_COLUMN_NAMES = {
+    "Fecha_I": "Fecha-I",
+    "Vlo_I": "Vlo-I",
+    "Ori_I": "Ori-I",
+    "Des_I": "Des-I",
+    "Emp_I": "Emp-I",
+    "Fecha_O": "Fecha-O",
+    "Vlo_O": "Vlo-O",
+    "Ori_O": "Ori-O",
+    "Des_O": "Des-O",
+    "Emp_O": "Emp-O",
+    "ANIO": "AÑO",
+}
 
 
 class BigQueryClient:
@@ -25,14 +49,23 @@ class BigQueryClient:
         ``Settings.gcp_project_id``.
     """
 
+    _SQL_PATH = Path(__file__).resolve().parents[2] / "assets" / "load_data.sql"
 
     def __init__(self, _client: bigquery.Client | None = None) -> None:
         """Initialise with optional injected BQ client."""
-        ...
+        if _client is None:
+            _client = bigquery.Client(project=get_settings().gcp_project_id or None)
+        self._client = _client
 
     def read(self) -> pd.DataFrame:
         """Execute ``assets/load_data.sql`` against BigQuery and return results."""
-        ...
+        settings = get_settings()
+        query = self._SQL_PATH.read_text().format(
+            project=settings.gcp_project_id,
+            dataset=settings.bq_dataset,
+            raw_table=settings.bq_raw_table,
+        )
+        return self._client.query(query).to_dataframe().rename(columns=_SOURCE_COLUMN_NAMES)
 
     def write(self, predictions: list[int], identifiers: pd.DataFrame) -> None:
         """Insert predictions into the configured BigQuery predictions table.
@@ -41,4 +74,14 @@ class BigQueryClient:
         predictions) and ``prediction`` (0 or 1).  Uses ``WRITE_TRUNCATE`` to
         replace the table on each serving run.
         """
-        ...
+        settings = get_settings()
+        frame = build_predictions_frame(predictions, identifiers)
+        table_id = (
+            f"{settings.gcp_project_id}.{settings.bq_dataset}.{settings.bq_predictions_table}"
+        )
+        job_config = bigquery.LoadJobConfig(
+            schema=_PREDICTIONS_SCHEMA,
+            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        )
+        job = self._client.load_table_from_dataframe(frame, table_id, job_config=job_config)
+        job.result()  # block until done; raises if the load job failed

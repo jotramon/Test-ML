@@ -1,0 +1,14 @@
+# Builds one of the repository's images and pushes it to Artifact Registry.
+#
+#   gcloud builds submit --config=infra/cloudbuild.yaml \
+#     --substitutions=_DOCKERFILE=Dockerfile.training,_IMAGE=<registry>/<name>:<tag>
+#
+# Runs as the challenge's single service account (see infra/bootstrap.sh), which
+# requires logs to go to Cloud Logging only.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    env: ["DOCKER_BUILDKIT=1"]
+    args: ["build", "--file", "${_DOCKERFILE}", "--tag", "${_IMAGE}", "."]
+images: ["${_IMAGE}"]
+options:
+  logging: CLOUD_LOGGING_ONLY

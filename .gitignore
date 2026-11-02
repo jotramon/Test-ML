@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Test / coverage output (make *-test)
+reports/
+.coverage
+.pytest_cache/
+
+# Local pipeline outputs (make training-local / serving-local)
+artifacts/
+
+# macOS
+.DS_Store
+
+# Terraform
+infra/terraform/.terraform/
+*.tfstate
+*.tfstate.*
