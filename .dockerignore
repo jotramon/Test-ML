@@ -1,0 +1,13 @@
+# Only pyproject.toml, uv.lock, README.md, challenge/ and assets/ belong in images.
+.git
+.venv
+**/__pycache__
+*.py[cod]
+.DS_Store
+.coverage
+artifacts
+reports
+data
+docs
+infra
+tests

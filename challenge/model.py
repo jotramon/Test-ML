@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from typing import Any
 
 import pandas as pd
 import xgboost as xgb
@@ -121,6 +122,8 @@ class GCPModelMixin:
         super().__init__()
         self._reader: DataReader = reader if reader is not None else LocalCSVClient()
         self._store: ArtifactStore = store if store is not None else LocalArtifactStore()
+        # Run metadata (version, metrics, ...) persisted next to the artifact by the store.
+        self.metadata: dict[str, Any] = {}
 
     def load_data(self, project: str = "", bq_dataset: str = "") -> pd.DataFrame:
         """Load raw flight data via the injected DataReader.
