@@ -97,3 +97,65 @@ Reproduce with `uv run python docs/model_comparison.py`.
 - The repository shipped with 29 `__pycache__` files under version control, compiled on another
   machine, and no `.gitignore`. I added a `.gitignore` and confirmed the tests also pass when
   compiled from source (`PYTHONPYCACHEPREFIX` pointing at a clean directory).
+
+---
+
+## Part II — Data infrastructure
+
+Everything is provisioned by [`infra/bootstrap.sh`](../infra/bootstrap.sh) with `gcloud` and
+`bq`; nothing is created from the web console.
+
+```bash
+gcloud auth login
+GCP_PROJECT_ID=<project-id> ./infra/bootstrap.sh
+DRY_RUN=1 GCP_PROJECT_ID=<project-id> ./infra/bootstrap.sh   # print the commands only
+```
+
+### Resources
+
+| Resource | Name (defaults) | Purpose |
+|---|---|---|
+| Service account | `mle-challenge@<project>.iam.gserviceaccount.com` | Single identity for every workload |
+| Bucket | `gs://<project>-mle-input` | Raw inputs: `data.csv`, `serving_input.csv` |
+| Bucket | `gs://<project>-mle-artifacts` | Versioned models: `<run_id>/model.joblib` + `latest.txt` |
+| BigQuery dataset | `mle_challenge` | All tables, in the same region as the buckets |
+| Table | `raw_flights` | Training data, loaded from `data.csv` (68,206 rows) |
+| Table | `serving_input` | Serving data, loaded from `serving_input.csv` (100 rows) |
+| Table | `predictions` | Written by the serving pipeline (Part IV) |
+
+### Design decisions
+
+- **Idempotent.** Each resource is created only if missing and the loads use `--replace`, so
+  the script can be re-run safely, for example from CI.
+- **Variable names match `challenge/config.py`** (`GCP_PROJECT_ID`, `GCP_BUCKET_INPUT`, …). The
+  script prints the resulting runtime configuration, ready to pass to the jobs and the API.
+- **`DRY_RUN=1`** prints every command without touching GCP, to review the plan first.
+- **Least privilege for the single service account.** Storage access is granted per bucket:
+  read-only on inputs, read/write on artifacts. BigQuery needs `jobUser` and `dataEditor`, granted
+  at project level.
+- **Explicit schemas instead of autodetect.** Flight numbers mix digits and letters (`Vlo-I`),
+  so they are `STRING`; dates are `DATETIME`. BigQuery column names cannot contain `-` or `Ñ`,
+  so the raw table uses `Fecha_I`, `ANIO`, and so on; `BigQueryClient` restores the source names
+  on read.
+- **`assets/load_data.sql` selects only the five columns the model needs**, instead of
+  `SELECT *`, which reduces the bytes scanned and billed.
+- **Serving reads its CSV from Cloud Storage** (`GCSCSVClient`, as the provided interface and
+  tests require). The `serving_input` table is loaded too, as the brief asks, and keeps both
+  datasets queryable side by side.
+
+### Verification
+
+Run against project `ml-test-513500`:
+
+- **Tables:** `raw_flights` has 68,206 rows and `serving_input` has 100, matching both CSVs.
+- **Reads through the project's own connectors:** `BigQueryClient.read()` returns the five
+  expected columns with their source names restored. `GCSCSVClient.read()` returns the serving
+  input.
+- **Same model inputs as the CSV path:** the features and target built from BigQuery equal those
+  built from `data.csv`, compared order-independently since BigQuery doesn't guarantee row order
+  (delay rate 18.49% in both).
+- **Idempotency:** a second run exits cleanly, skips existing resources and leaves the row
+  counts unchanged.
+- **Data checks before loading:** both CSVs are valid UTF-8; every date matches the `DATETIME`
+  format and every day, month and year is an integer. The only null is one flight number
+  (`Vlo-O`), loaded as `NULL`.
