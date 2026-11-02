@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -96,6 +97,9 @@ class LocalArtifactStore:
         path = root / run_id / "model.joblib"
         path.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(model._model, path)
+        metadata = getattr(model, "metadata", None)
+        if metadata:
+            (path.parent / "metadata.json").write_text(json.dumps(metadata, indent=2))
         # Written after the model so latest.txt never points at a missing artifact.
         (root / "latest.txt").write_text(run_id)
         return str(path)

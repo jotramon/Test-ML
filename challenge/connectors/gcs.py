@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 from typing import Any
 
 import joblib
@@ -44,6 +45,11 @@ class GCSArtifactStore:
         bucket.blob(blob_name).upload_from_string(
             buffer.getvalue(), content_type="application/octet-stream"
         )
+        metadata = getattr(model, "metadata", None)
+        if metadata:
+            bucket.blob(f"{run_id}/metadata.json").upload_from_string(
+                json.dumps(metadata, indent=2), content_type="application/json"
+            )
         # Written after the model so latest.txt never points at a missing artifact.
         bucket.blob("latest.txt").upload_from_string(run_id)
         return f"gs://{bucket_name}/{blob_name}"
