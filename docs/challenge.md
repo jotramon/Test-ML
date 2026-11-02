@@ -6,6 +6,9 @@
 brew install uv libomp   # libomp: OpenMP runtime XGBoost needs on macOS
 make install
 make model-test
+uv run ruff check challenge --exclude challenge/exploration.ipynb
+uv run ruff format --check challenge --exclude challenge/exploration.ipynb
+uv run mypy                # typed against pandas-stubs; config in pyproject.toml
 ```
 
 ---
@@ -93,12 +96,15 @@ Reproduce with `uv run python docs/model_comparison.py`.
   Fixed in Part III by adding the missing import, following the brief's "If you find any bug,
   fix it". No assertion was changed. The "cannot change the unit test implementation" rule
   applies to `make model-test`, whose tests are untouched.
-- In the `Makefile`, `.PHONY: pipeline-test` doesn't match the actual target, `pipelines-test`.
+- In the `Makefile`, `.PHONY: pipeline-test` didn't match the actual target, `pipelines-test`.
+  Fixed.
 - There is no `.coveragerc`, although the test targets reference it; `coverage` falls back to
   its defaults.
 - The repository shipped with 29 `__pycache__` files under version control, compiled on another
   machine, and no `.gitignore`. I added a `.gitignore` and confirmed the tests also pass when
   compiled from source (`PYTHONPYCACHEPREFIX` pointing at a clean directory).
+- Two `.DS_Store` files (macOS Finder metadata) were also tracked; they are untracked now and
+  ignored by `.gitignore`.
 
 ---
 
@@ -309,9 +315,10 @@ make stress-test      # against STRESS_URL (default http://127.0.0.1:8000)
   `OPERA, TIPOVUELO, MES`. "First 10 predictions" means the first page in that order.
 - **Local mode** runs the same pipelines in-process (`training.main`, `serving.main`), so the API
   and the stress test work without GCP.
-- **Least privilege:** the service account can run only the two jobs (`roles/run.invoker` on each).
-  Waiting on a run needs `run.operations.get`, which exists only at project level, so it also gets
-  the read-only `roles/run.viewer` on the project. `--max-instances=3` caps the cost of a public endpoint.
+- **Least privilege:** Cloud Run rights are scoped to the two jobs (`roles/run.developer` on each,
+  see Part VI). Waiting on a run needs `run.operations.get`, which exists only at project level, so
+  the service account also gets the read-only `roles/run.viewer` on the project.
+  `--max-instances=3` caps the cost of a public endpoint.
 - **Pre-flight checks are free:** the row count comes from table metadata, not a query.
 
 ### Verification
@@ -355,7 +362,7 @@ pull requests to `main` and `develop`. It needs no GCP access.
 
 | Job | What it checks |
 |---|---|
-| `lint` | `ruff` on the application code (the provided notebook and test files are left as delivered) |
+| `lint` | `ruff check`, `ruff format --check` and `mypy` on the application code (the provided notebook and test files are left as delivered) |
 | `test` | `make model-test`, `make pipelines-test`, `make api-test`; reports uploaded as an artifact |
 | `stress-test` | Local mode end to end (train, serve, start the API), then `make stress-test` |
 | `docker` | Builds the three images, so a broken Dockerfile fails before reaching `main` |
