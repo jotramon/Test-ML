@@ -225,3 +225,49 @@ folder; `gcp`: BigQuery + GCS). The steps are identical in both modes.
 BigQuery doesn't guarantee row order, so the holdout split may differ between runs on the same
 data. Metrics can vary slightly from run to run; the shipped model is unaffected because it is
 refit on all rows.
+
+---
+
+## Part IV — Serving pipeline
+
+[`challenge/serving.py`](../challenge/serving.py) runs as the Cloud Run Job `mle-serving`.
+
+```bash
+make serving-local                                          # latest local model -> artifacts/predictions.csv
+gcloud run jobs execute mle-serving --region=us-central1 --wait   # GCS input -> BigQuery predictions
+```
+
+### Steps
+
+| Step | What it does |
+|---|---|
+| `step_load_model` | Loads the model `latest.txt` points to (or a given version) |
+| `step_load_data` | Reads `serving_input.csv` (`LocalCSVClient` or `GCSCSVClient`) |
+| `step_preprocess` | `DelayModel.preprocess` without a target → top-10 features |
+| `step_predict` | `DelayModel.predict` → one 0/1 prediction per flight |
+| `step_write` | Writes `OPERA, TIPOVUELO, MES, prediction` to `artifacts/predictions.csv` or the BigQuery `predictions` table |
+
+### Design decisions
+
+- **Fails loudly without a model.** `step_load_model` raises when no artifact exists, so the job
+  exits with code 1 and the message "train a model first". It never reaches
+  `DelayModel.predict`'s untrained fallback, which returns all zeros.
+- **Predictions are written through the model** (`GCPModelMixin.write_predictions`, a new public
+  method), so the pipeline never reaches into the model's private reader.
+- **The `predictions` table is replaced on each run** (`WRITE_TRUNCATE`) with an explicit schema:
+  it always holds the output of the latest batch, which is what the API reads.
+- **Same image recipe as training**: `Dockerfile.serving` differs only in its command, and
+  `bootstrap.sh` builds and deploys both jobs with the same functions and job settings.
+
+### Verification
+
+- **Unit tests:** `make pipelines-test` passes 8/8 (3 training + 5 serving).
+- **Local:** `make serving-local` scores the 100 flights of `serving_input.csv` (52 predicted
+  delays).
+- **No model:** with an empty artifacts directory the job exits with code 1 and "train a model
+  first".
+- **`gcp` mode from a laptop:** the `predictions` table receives 100 rows, with the expected schema
+  and the same 52 delays as the local run.
+- **Cloud Run:** execution `mle-serving-pxvt6` succeeded and rewrote the `predictions` table
+  (100 rows, 52 delays).
+- **`bootstrap.sh` end to end** (exit code 0): builds both images and deploys both jobs.
